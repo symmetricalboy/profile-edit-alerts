@@ -320,11 +320,16 @@ async def listen_jetstream(client):
                         event_kind = event.get('kind')
                         commit_collection = event.get('commit', {}).get('collection')
                         
+                        # DEBUG: Log event types we're receiving
+                        print(f"🔍 EVENT DEBUG: kind={event_kind}, collection={commit_collection}")
+                        
                         # Skip events we don't care about (reduces noise from fake filter)
                         if event_kind not in ['commit', 'identity']:
+                            print(f"   Skipping event kind: {event_kind}")
                             continue
                             
                         if event_kind == 'commit' and commit_collection not in ['app.bsky.graph.follow', 'app.bsky.actor.profile']:
+                            print(f"   Skipping commit collection: {commit_collection}")
                             continue
                         
                         # Check if this is a follow event (someone following the bot)
@@ -372,7 +377,14 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
                             changed_did = event.get('did')
                             new_handle = event.get('handle')
                             
-                            # Handle change detected
+                            # DEBUG: Print full identity event structure to see what's wrong
+                            print(f"🐛 IDENTITY EVENT DEBUG:")
+                            print(f"   Full event: {json.dumps(event, indent=2)}")
+                            print(f"   Extracted handle: {new_handle}")
+                            
+                            # Skip if we don't have proper data
+                            if not changed_did or not new_handle:
+                                continue
                             
                             # FIRST: Check if this user has mutual followers (only care about relevant users!)
                             relevant_user = False
