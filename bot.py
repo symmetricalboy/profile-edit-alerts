@@ -589,12 +589,12 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
 
 async def listen_profile_events(client):
     """Connect to Jetstream and listen for profile updates and follows."""
-    # Real Jetstream endpoints with proper filtering for profiles and follows
+    # Use Phil's fake filter approach - server-side filtering doesn't work as expected
     endpoints = [
-        "wss://jetstream1.us-east.fire.hose.cam/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false",
-        "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false", 
-        "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false",
-        "wss://jetstream1.us-east.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false"
+        "wss://jetstream1.us-east.fire.hose.cam/subscribe?wantedCollections=nothing.please.thanks&compress=false",
+        "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false", 
+        "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
+        "wss://jetstream1.us-east.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false"
     ]
     
     for uri in endpoints:
@@ -606,11 +606,16 @@ async def listen_profile_events(client):
                     try:
                         event = json.loads(message)
                         
-                        # Only process commit events
-                        if event.get('kind') != 'commit':
+                        # Filter events - we only care about profile updates and follows
+                        event_kind = event.get('kind')
+                        commit_collection = event.get('commit', {}).get('collection')
+                        
+                        # Skip events we don't care about (using fake filter means we get everything)
+                        if event_kind != 'commit':
                             continue
                             
-                        commit_collection = event.get('commit', {}).get('collection')
+                        if commit_collection not in ['app.bsky.graph.follow', 'app.bsky.actor.profile']:
+                            continue
                         
                         # Check if this is a follow event (someone following the bot)
                         if commit_collection == 'app.bsky.graph.follow':
