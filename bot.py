@@ -372,37 +372,10 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
                             changed_did = event.get('did')
                             new_handle = event.get('handle')
                             
-                            # DEBUG: Log identity event structure
-                            print(f"🏷️  IDENTITY EVENT received:")
-                            print(f"   DID: {changed_did}")
-                            print(f"   New Handle: {new_handle}")
-                            print(f"   Full Event: {event}")
+                            # Handle change detected
                             
-                            # FIRST: Update the handle in our database
-                            try:
-                                existing_profile = await database.get_profile(changed_did)
-                                if existing_profile:
-                                    # Update just the handle efficiently
-                                    success = await database.update_handle(changed_did, new_handle)
-                                    if success:
-                                        print(f"🔄 Updated handle in database: {changed_did} -> @{new_handle}")
-                                    else:
-                                        print(f"⚠️  Failed to update handle in database for {changed_did}")
-                                else:
-                                    # New profile - create basic entry with handle
-                                    await database.store_profile(
-                                        did=changed_did,
-                                        handle=new_handle,
-                                        display_name='',
-                                        description='',
-                                        avatar_ref='',
-                                        banner_ref=''
-                                    )
-                                    print(f"🆕 Created new profile entry for handle change: @{new_handle}")
-                            except Exception as e:
-                                print(f"❌ Error updating handle in database: {e}")
-                            
-                            # THEN: Check if this user has mutual followers for notifications
+                            # FIRST: Check if this user has mutual followers (only care about relevant users!)
+                            relevant_user = False
                             try:
                                 user_followers = client.get_followers(actor=changed_did)
                                 bot_followers = client.get_followers(actor=client.me.did)
@@ -413,7 +386,35 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
                                 mutual_followers = user_follower_dids.intersection(bot_follower_dids)
                                 
                                 if mutual_followers:
-                                    # Filter out users who have disabled handle notifications
+                                    relevant_user = True
+                                    print(f"🏷️  Handle change (relevant user): @{new_handle}")
+                                    
+                                    # ONLY NOW update database for relevant users
+                                    existing_profile = await database.get_profile(changed_did)
+                                    if existing_profile:
+                                        # Update just the handle efficiently
+                                        success = await database.update_handle(changed_did, new_handle)
+                                        if success:
+                                            print(f"🔄 Updated handle in database: {changed_did} -> @{new_handle}")
+                                        else:
+                                            print(f"⚠️  Failed to update handle in database for {changed_did}")
+                                    else:
+                                        # New relevant user - fetch full profile data instead of empty entry
+                                        try:
+                                            user_profile = client.get_profile(actor=changed_did)
+                                            await database.store_profile(
+                                                did=changed_did,
+                                                handle=new_handle,
+                                                display_name=user_profile.display_name or '',
+                                                description=user_profile.description or '',
+                                                avatar_ref=str(user_profile.avatar) if user_profile.avatar else '',
+                                                banner_ref=str(user_profile.banner) if user_profile.banner else ''
+                                            )
+                                            print(f"🆕 Created full profile entry for new relevant user: @{new_handle}")
+                                        except Exception as fetch_error:
+                                            print(f"⚠️  Could not fetch full profile for {changed_did}: {fetch_error}")
+                                    
+                                    # Send notifications to mutual followers
                                     followers_to_notify = []
                                     for follower_did in mutual_followers:
                                         disabled_cats = await database.get_user_preferences(follower_did)
@@ -421,12 +422,13 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
                                             followers_to_notify.append(follower_did)
 
                                     if followers_to_notify:
-                                        print(f"🏷️  Handle change: @{new_handle}")
                                         user_profile = client.get_profile(actor=changed_did)
                                         notification_text = format_change_message(user_profile, {'handle'})
                                         for follower_did in followers_to_notify:
                                             send_dm(client, follower_did, notification_text)
                                         print(f"✅ Sent {len(followers_to_notify)} handle change notification(s)")
+                                else:
+                                    print(f"🏷️  Handle change (irrelevant user): @{new_handle} - skipped")
                                 
                             except Exception as e:
                                 print(f"❌ Error processing handle change for {changed_did}: {e}")
@@ -438,8 +440,14 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
                             repo_did = event.get('did')
                             operation = event.get('commit', {}).get('operation')
                             
+                            # DEBUG: Log profile update events
+                            print(f"📝 PROFILE UPDATE EVENT:")
+                            print(f"   DID: {repo_did}")
+                            print(f"   Operation: {operation}")
+                            
                             # Skip "create" operations (new profiles) - only care about "updates"
                             if operation != 'update':
+                                print(f"   Skipped (operation = {operation})")
                                 continue
                                 
                             try:
