@@ -289,11 +289,10 @@ def send_dm(client, recipient_did, message_text):
     except Exception as e:
         print(f"Error sending DM to {recipient_did}: {e}")
 
-async def listen_jetstream(client):
-    """Connect to Jetstream and listen for profile updates."""
-    # Try different Jetstream endpoints - using Phil's approach for handle changes
+async def listen_identity_events(client):
+    """Connect to Jetstream and listen for handle changes using Phil's fake filter approach."""
+    # Phil's recommended approach - fake filter to get identity events
     endpoints = [
-        # Phil's recommended approach - fake filter to get all events including identity changes
         "wss://jetstream1.us-east.fire.hose.cam/subscribe?wantedCollections=nothing.please.thanks&compress=false",
         "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
         "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
@@ -320,17 +319,16 @@ async def listen_jetstream(client):
                         event_kind = event.get('kind')
                         commit_collection = event.get('commit', {}).get('collection')
                         
-                        # DEBUG: Log event types we're receiving
-                        print(f"🔍 EVENT DEBUG: kind={event_kind}, collection={commit_collection}")
-                        
-                        # Skip events we don't care about (reduces noise from fake filter)
+                        # Skip events we don't care about (reduces noise from fake filter)  
                         if event_kind not in ['commit', 'identity']:
-                            print(f"   Skipping event kind: {event_kind}")
                             continue
                             
                         if event_kind == 'commit' and commit_collection not in ['app.bsky.graph.follow', 'app.bsky.actor.profile']:
-                            print(f"   Skipping commit collection: {commit_collection}")
                             continue
+                        
+                        # DEBUG: Log what we're actually processing
+                        if event_kind == 'commit':
+                            print(f"📝 COMMIT EVENT: {commit_collection}")
                         
                         # Check if this is a follow event (someone following the bot)
                         if (event.get('kind') == 'commit' and 
@@ -375,16 +373,13 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
                         # Check if this is a handle change event (identity events per Phil's advice)
                         elif event.get('kind') == 'identity':
                             changed_did = event.get('did')
-                            new_handle = event.get('handle')
-                            
-                            # DEBUG: Print full identity event structure to see what's wrong
-                            print(f"🐛 IDENTITY EVENT DEBUG:")
-                            print(f"   Full event: {json.dumps(event, indent=2)}")
-                            print(f"   Extracted handle: {new_handle}")
+                            new_handle = event.get('identity', {}).get('handle')
                             
                             # Skip if we don't have proper data
                             if not changed_did or not new_handle:
                                 continue
+                                
+                            print(f"🏷️  Handle change detected: @{new_handle}")
                             
                             # FIRST: Check if this user has mutual followers (only care about relevant users!)
                             relevant_user = False
@@ -592,6 +587,132 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
             
         await asyncio.sleep(10)
 
+async def listen_profile_events(client):
+    """Connect to Jetstream and listen for profile updates and follows."""
+    # Real Jetstream endpoints with proper filtering for profiles and follows
+    endpoints = [
+        "wss://jetstream1.us-east.fire.hose.cam/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false",
+        "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false", 
+        "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false",
+        "wss://jetstream1.us-east.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile,app.bsky.graph.follow&compress=false"
+    ]
+    
+    for uri in endpoints:
+        try:
+            print(f"📝 Connecting to Profile Jetstream: {uri}")
+            async with websockets.connect(uri) as websocket:
+                print("📝 Connected! Listening for profile updates and follows...")
+                async for message in websocket:
+                    try:
+                        event = json.loads(message)
+                        
+                        # Only process commit events
+                        if event.get('kind') != 'commit':
+                            continue
+                            
+                        commit_collection = event.get('commit', {}).get('collection')
+                        
+                        # Check if this is a follow event (someone following the bot)
+                        if commit_collection == 'app.bsky.graph.follow':
+                            commit = event.get('commit', {})
+                            operation = commit.get('operation')
+                            record = commit.get('record', {})
+                            repo_did = event.get('did')
+                            
+                            # Check if someone is following the bot
+                            if operation == 'create' and record.get('subject') == client.me.did:
+                                follower_did = repo_did
+                                print(f"👤 New follower: {follower_did}")
+                                
+                                # Send welcome message
+                                welcome_message = f"""🤖 Welcome! I'll notify you when people you follow edit their profiles.
+                                
+Commands:
+• disable avatar - stop avatar change notifications
+• disable displayname - stop display name change notifications  
+• disable bio - stop bio change notifications
+• disable handle - stop handle change notifications
+• disable banner - stop banner change notifications
+• enable [category] - re-enable any category
+                                
+Just send me a DM with any of these commands!"""
+                                
+                                send_dm(client, follower_did, welcome_message)
+                                print(f"✅ Welcome message sent")
+                                
+                                # Trigger background profile population for this new follower
+                                trigger_profile_population(client, follower_did)
+                                print(f"🔄 Started background profile population for {follower_did}")
+                        
+                        # Check if this is a profile update
+                        elif commit_collection == 'app.bsky.actor.profile':
+                            repo_did = event.get('did')
+                            operation = event.get('commit', {}).get('operation')
+                            
+                            print(f"📝 PROFILE UPDATE EVENT: {repo_did}, operation: {operation}")
+                            
+                            # Skip "create" operations (new profiles) - only care about "updates"
+                            if operation != 'update':
+                                continue
+                                
+                            try:
+                                # Check if this user has mutual followers with the bot
+                                user_followers = client.get_followers(actor=repo_did)
+                                bot_followers = client.get_followers(actor=client.me.did)
+
+                                user_follower_dids = {follower.did for follower in user_followers.followers}
+                                bot_follower_dids = {follower.did for follower in bot_followers.followers}
+                                
+                                mutual_followers = user_follower_dids.intersection(bot_follower_dids)
+                                
+                                if mutual_followers:
+                                    # Someone we care about updated their profile!
+                                    user_profile = client.get_profile(actor=repo_did)
+                                    
+                                    # Get the new record from Jetstream
+                                    new_record = event.get('commit', {}).get('record', {})
+                                    
+                                    # Try to detect what changed (need previous state for this)
+                                    changed_categories = await detect_profile_changes(repo_did, new_record, client)
+                                    
+                                    if changed_categories:
+                                        print(f"📝 Profile changes detected for {user_profile.handle}: {changed_categories}")
+                                        
+                                        # Filter out users who have disabled specific notifications
+                                        followers_to_notify = []
+                                        for follower_did in mutual_followers:
+                                            disabled_cats = await database.get_user_preferences(follower_did)
+                                            # Check if any of the changed categories are NOT disabled
+                                            if not changed_categories.issubset(disabled_cats):
+                                                # Filter to only include non-disabled categories
+                                                enabled_changes = changed_categories - disabled_cats
+                                                if enabled_changes:
+                                                    followers_to_notify.append((follower_did, enabled_changes))
+
+                                        if followers_to_notify:
+                                            for follower_did, enabled_changes in followers_to_notify:
+                                                notification_text = format_change_message(user_profile, enabled_changes)
+                                                send_dm(client, follower_did, notification_text)
+                                            print(f"✅ Sent {len(followers_to_notify)} profile change notification(s)")
+                                    else:
+                                        print(f"📝 No meaningful changes detected for {user_profile.handle}")
+                                        
+                            except Exception as e:
+                                print(f"❌ Error processing profile update for {repo_did}: {e}")
+                        
+                    except json.JSONDecodeError:
+                        continue
+                    except Exception as e:
+                        print(f"❌ Error processing profile event: {e}")
+                        continue
+                        
+        except Exception as e:
+            print(f"❌ Profile listener failed on {uri}: {e}")
+            continue
+    
+    print("❌ All profile endpoints failed.")
+
+
 async def main():
     """Main function that runs both the Jetstream listener and follower checker."""
     # Initialize database connection
@@ -602,9 +723,10 @@ async def main():
     print(f"Logged in as {client.me.handle}")
 
     try:
-        # Run both tasks concurrently
+        # Run THREE tasks concurrently: identity events, profile events, and DM handling
         await asyncio.gather(
-            listen_jetstream(client),
+            listen_identity_events(client),
+            listen_profile_events(client),
             check_followers_and_dms(client)
         )
     finally:
