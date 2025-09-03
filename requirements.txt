@@ -1,0 +1,6 @@
+atproto
+python-dotenv
+websockets
+asyncio
+psycopg2-binary
+asyncpg
