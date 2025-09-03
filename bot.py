@@ -54,10 +54,26 @@ async def detect_profile_changes(user_did, new_record, client=None):
         if previous_profile.get('description'):
             previous_record['description'] = previous_profile['description']
     
-    # Compare avatar/profile picture
-    old_avatar = previous_record.get('avatar')
-    new_avatar = new_record.get('avatar')
-    if old_avatar != new_avatar:
+    # Compare avatar/profile picture (extract the actual URL for comparison)
+    old_avatar_url = ""
+    new_avatar_url = ""
+    
+    # Extract old avatar URL from database format
+    if previous_record.get('avatar') and isinstance(previous_record['avatar'], dict):
+        old_avatar_url = previous_record['avatar'].get('$link', '')
+    
+    # Extract new avatar URL from Jetstream format
+    if new_record.get('avatar') and isinstance(new_record['avatar'], dict):
+        if 'ref' in new_record['avatar'] and isinstance(new_record['avatar']['ref'], dict):
+            new_avatar_url = new_record['avatar']['ref'].get('$link', '')
+        elif '$link' in new_record['avatar']:
+            # Sometimes it might be direct format
+            new_avatar_url = new_record['avatar'].get('$link', '')
+    
+    # Compare avatar URLs for changes
+    # (Debug logging removed - avatar comparison working correctly)
+    
+    if old_avatar_url != new_avatar_url:
         changed_categories.add('avatar')
     
     # Compare display name
@@ -89,6 +105,8 @@ async def store_profile_from_record(user_did, record, client=None):
         banner_ref = None
         if record.get('banner') and isinstance(record['banner'], dict):
             banner_ref = record['banner'].get('ref', {}).get('$link', '')
+        
+        # Store profile data in database
         
         # Get handle from client if available
         handle = None
@@ -250,12 +268,13 @@ def send_dm(client, recipient_did, message_text):
 
 async def listen_jetstream(client):
     """Connect to Jetstream and listen for profile updates."""
-    # Try different Jetstream endpoints - listen for both profile updates and follows
+    # Try different Jetstream endpoints - using Phil's approach for handle changes
     endpoints = [
-        "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile&wantedCollections=app.bsky.graph.follow&compress=false",
-        "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile&wantedCollections=app.bsky.graph.follow&compress=false",
-        "wss://jetstream1.us-east.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile&wantedCollections=app.bsky.graph.follow&compress=false",
-        "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile&wantedCollections=app.bsky.graph.follow&compress=false"
+        # Phil's recommended approach - fake filter to get all events including identity changes
+        "wss://jetstream1.us-east.fire.hose.cam/subscribe?wantedCollections=nothing.please.thanks&compress=false",
+        "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
+        "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
+        "wss://jetstream1.us-east.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false"
     ]
     
     for uri in endpoints:
@@ -273,6 +292,17 @@ async def listen_jetstream(client):
                 async for message in websocket:
                     try:
                         event = json.loads(message)
+                        
+                        # Filter events - we only care about follows, profiles, and identity changes
+                        event_kind = event.get('kind')
+                        commit_collection = event.get('commit', {}).get('collection')
+                        
+                        # Skip events we don't care about (reduces noise from fake filter)
+                        if event_kind not in ['commit', 'identity']:
+                            continue
+                            
+                        if event_kind == 'commit' and commit_collection not in ['app.bsky.graph.follow', 'app.bsky.actor.profile']:
+                            continue
                         
                         # Check if this is a follow event (someone following the bot)
                         if (event.get('kind') == 'commit' and 
@@ -312,10 +342,16 @@ Send just the command (e.g. "disable avatar") and I'll confirm the change!"""
                                 trigger_profile_population(client, follower_did)
                                 print(f"🔄 Started background profile population for {follower_did}")
                         
-                        # Check if this is a handle change event
-                        elif event.get('kind') == 'handle':
+                        # Check if this is a handle change event (identity events per Phil's advice)
+                        elif event.get('kind') == 'identity':
                             changed_did = event.get('did')
                             new_handle = event.get('handle')
+                            
+                            # DEBUG: Log identity event structure
+                            print(f"🏷️  IDENTITY EVENT received:")
+                            print(f"   DID: {changed_did}")
+                            print(f"   New Handle: {new_handle}")
+                            print(f"   Full Event: {event}")
                             
                             # FIRST: Update the handle in our database
                             try:
