@@ -13,7 +13,7 @@ BLUESKY_HANDLE = os.environ.get('BLUESKY_HANDLE')
 BLUESKY_PASSWORD = os.environ.get('BLUESKY_PASSWORD')
 
 VALID_COMMANDS = {'disable', 'enable'}
-VALID_CATEGORIES = {'avatar', 'displayname', 'bio', 'handle'}
+VALID_CATEGORIES = {'avatar', 'displayname', 'bio', 'handle', 'banner'}
 
 async def detect_profile_changes(user_did, new_record, client=None):
     """Compare new profile record with database state to detect actual changes."""
@@ -49,6 +49,8 @@ async def detect_profile_changes(user_did, new_record, client=None):
         previous_record = {}
         if previous_profile.get('avatar_ref'):
             previous_record['avatar'] = {'$link': previous_profile['avatar_ref']}
+        if previous_profile.get('banner_ref'):
+            previous_record['banner'] = {'$link': previous_profile['banner_ref']}
         if previous_profile.get('display_name'):
             previous_record['displayName'] = previous_profile['display_name']
         if previous_profile.get('description'):
@@ -75,6 +77,25 @@ async def detect_profile_changes(user_did, new_record, client=None):
     
     if old_avatar_url != new_avatar_url:
         changed_categories.add('avatar')
+    
+    # Compare banner/header image (extract the actual URL for comparison)
+    old_banner_url = ""
+    new_banner_url = ""
+    
+    # Extract old banner URL from database format
+    if previous_record.get('banner') and isinstance(previous_record['banner'], dict):
+        old_banner_url = previous_record['banner'].get('$link', '')
+    
+    # Extract new banner URL from Jetstream format
+    if new_record.get('banner') and isinstance(new_record['banner'], dict):
+        if 'ref' in new_record['banner'] and isinstance(new_record['banner']['ref'], dict):
+            new_banner_url = new_record['banner']['ref'].get('$link', '')
+        elif '$link' in new_record['banner']:
+            # Sometimes it might be direct format
+            new_banner_url = new_record['banner'].get('$link', '')
+    
+    if old_banner_url != new_banner_url:
+        changed_categories.add('banner')
     
     # Compare display name
     old_display_name = previous_record.get('displayName', '')
@@ -218,6 +239,7 @@ def format_change_message(user_profile, changed_categories):
         change = list(changed_categories)[0]
         change_text = {
             'avatar': 'updated their avatar',
+            'banner': 'updated their banner',
             'displayname': 'changed their display name',
             'bio': 'updated their bio',
             'handle': 'changed their handle'
@@ -230,6 +252,7 @@ def format_change_message(user_profile, changed_categories):
         for change in sorted(changed_categories):
             change_text = {
                 'avatar': 'avatar',
+                'banner': 'banner',
                 'displayname': 'display name', 
                 'bio': 'bio',
                 'handle': 'handle'
@@ -323,12 +346,14 @@ async def listen_jetstream(client):
 
 I can notify you about:
 • Avatar changes
+• Banner/header changes
 • Display name changes  
 • Bio/description updates
-• Handle changes (checked periodically)
+• Handle changes
 
 You can customize your notifications by sending me these commands:
 • "disable avatar" - Stop avatar change notifications
+• "disable banner" - Stop banner change notifications
 • "disable displayname" - Stop display name notifications  
 • "disable bio" - Stop bio update notifications
 • "disable handle" - Stop handle change notifications
@@ -520,10 +545,12 @@ async def check_followers_and_dms(client):
 
 Enable/Disable Commands:
 • "disable avatar" - Stop avatar change notifications
+• "disable banner" - Stop banner change notifications
 • "disable displayname" - Stop display name notifications  
 • "disable bio" - Stop bio update notifications
 • "disable handle" - Stop handle change notifications
 • "enable avatar" - Re-enable avatar notifications
+• "enable banner" - Re-enable banner notifications
 • "enable displayname" - Re-enable display name notifications
 • "enable bio" - Re-enable bio notifications
 • "enable handle" - Re-enable handle notifications

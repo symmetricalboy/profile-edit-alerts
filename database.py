@@ -62,6 +62,7 @@ async def create_tables():
             CREATE TABLE IF NOT EXISTS user_preferences (
                 user_did TEXT PRIMARY KEY,
                 disabled_avatar BOOLEAN DEFAULT FALSE,
+                disabled_banner BOOLEAN DEFAULT FALSE,
                 disabled_displayname BOOLEAN DEFAULT FALSE,
                 disabled_bio BOOLEAN DEFAULT FALSE,
                 disabled_handle BOOLEAN DEFAULT FALSE,
@@ -73,6 +74,14 @@ async def create_tables():
         # Create index for faster lookups
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_profiles_did ON profiles(did)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_user_prefs_did ON user_preferences(user_did)')
+        
+        # Migration: Add banner column to existing user_preferences table
+        try:
+            await conn.execute('ALTER TABLE user_preferences ADD COLUMN disabled_banner BOOLEAN DEFAULT FALSE')
+            print("🔄 Added disabled_banner column to user_preferences table")
+        except Exception:
+            # Column already exists, which is fine
+            pass
 
 async def get_profile(did: str) -> Optional[Dict]:
     """Get a profile from the database."""
@@ -150,6 +159,8 @@ async def get_user_preferences(user_did: str) -> Set[str]:
         disabled = set()
         if row['disabled_avatar']:
             disabled.add('avatar')
+        if row.get('disabled_banner'):  # Use .get() in case column doesn't exist yet
+            disabled.add('banner')
         if row['disabled_displayname']:
             disabled.add('displayname')
         if row['disabled_bio']:
@@ -164,7 +175,7 @@ async def update_user_preference(user_did: str, category: str, disabled: bool) -
     if not pool:
         return False
         
-    if category not in ['avatar', 'displayname', 'bio', 'handle']:
+    if category not in ['avatar', 'banner', 'displayname', 'bio', 'handle']:
         return False
         
     try:
