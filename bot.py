@@ -19,21 +19,10 @@ async def detect_profile_changes(user_did, new_record, client=None):
         # Get the previous profile from database
         previous_profile = await database.get_profile(user_did)
         
-        # If no previous profile, try to get current profile from API for first-time comparison
+        # If no previous profile, we can't detect changes, but we will store it for next time.
         if not previous_profile:
-            if client:
-                try:
-                    current_profile = client.get_profile(actor=user_did)
-                    previous_profile = {
-                        'display_name': current_profile.display_name or '',
-                        'description': current_profile.description or '',
-                        'avatar_ref': str(current_profile.avatar) if current_profile.avatar else '',
-                        'banner_ref': str(current_profile.banner) if current_profile.banner else ''
-                    }
-                except:
-                    # If we can't get the profile, treat as all new (no changes to report)
-                    pass
-        
+            pass # Explicitly pass here, we'll store at the end
+
         if previous_profile:
             # Compare display name
             new_display_name = new_record.get('displayName', '')
@@ -68,7 +57,9 @@ async def detect_profile_changes(user_did, new_record, client=None):
                 changed_categories.append('banner')
         
         # Store the updated profile in database
-        await store_profile_from_record(user_did, new_record, client)
+        store_task = asyncio.create_task(store_profile_from_record(user_did, new_record, client))
+        # Optional: await if you need to ensure it's stored before returning
+        # await store_task 
         
         return changed_categories
         
@@ -133,6 +124,7 @@ async def populate_profiles_for_new_follower(client, follower_did):
                 existing_profile = await database.get_profile(follow.did)
                 if existing_profile and existing_profile.get('handle') != profile.handle:
                     print(f"🔄 Detected stale handle during population: {existing_profile.get('handle')} -> {profile.handle}")
+                    await database.update_handle(follow.did, profile.handle)
                 
                 profiles_to_store.append({
                     'did': follow.did,
@@ -193,12 +185,11 @@ def format_change_message(user_profile, changed_categories):
 def send_dm(client, recipient_did, message_text):
     """Send a direct message to a user."""
     try:
-        dm = client.with_bsky_chat_proxy()
+        dm_client = client.with_bsky_chat_proxy()
+        dm = dm_client.chat.bsky.convo
         
-        convo = dm.get_or_create_conversation(
-            models.ChatBskyConvoGetOrCreateConvo.Data(
-                members=[recipient_did]
-            )
+        convo = dm.get_convo_for_members(
+            models.ChatBskyConvoGetConvoForMembers.Params(members=[recipient_did])
         ).convo
 
         dm.send_message(
@@ -264,7 +255,7 @@ async def process_identity_event(client, event):
             for follower_did in mutual_followers:
                 try:
                     user_prefs = await database.get_user_preferences(follower_did)
-                    if not user_prefs.get('disabled_handle', False):
+                    if 'handle' not in user_prefs:
                         user_profile = None
                         try:
                             user_profile = client.get_profile(actor=changed_did)
@@ -289,20 +280,18 @@ async def process_identity_event(client, event):
         else:
             print(f"❌ Error processing handle change for {changed_did}: {e}")
 
-async def listen_identity_events(client):
-    """Connect to Jetstream and listen ONLY for handle changes using Phil's fake filter approach."""
-    # Phil's recommended approach - fake filter to get identity events
+async def listen_all_events(client):
+    """Connect to Jetstream and listen for all relevant events."""
     endpoints = [
-        "wss://jetstream1.us-east.fire.hose.cam/subscribe?wantedCollections=nothing.please.thanks&compress=false",
-        "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
-        "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
-        "wss://jetstream1.us-east.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false"
+        "wss://jetstream1.us-east.fire.hose.cam/subscribe",
+        "wss://jetstream2.us-west.bsky.network/subscribe",
+        "wss://jetstream1.us-west.bsky.network/subscribe",
+        "wss://jetstream1.us-east.bsky.network/subscribe"
     ]
     
     for uri in endpoints:
         try:
-            print(f"🏷️  Connecting to Identity Jetstream: {uri}")
-            # Add longer timeout and connection parameters
+            print(f"🔗 Connecting to Jetstream: {uri}")
             async with websockets.connect(
                 uri, 
                 open_timeout=30,
@@ -310,28 +299,35 @@ async def listen_identity_events(client):
                 ping_interval=20,
                 ping_timeout=10
             ) as websocket:
-                print("🏷️  Connected! Listening for handle changes...")
+                print("✅ Connected! Listening for all events...")
                 async for message in websocket:
                     try:
                         event = json.loads(message)
                         
-                        # ONLY process identity events in this listener
                         if event.get('kind') == 'identity':
-                            # Process each identity event asynchronously
                             asyncio.create_task(process_identity_event(client, event))
-                            # Yield control to allow other listeners to work
-                            await asyncio.sleep(0)
+                        
+                        elif event.get('kind') == 'commit':
+                            commit_collection = event.get('commit', {}).get('collection')
+                            
+                            if commit_collection == 'app.bsky.graph.follow':
+                                asyncio.create_task(process_follow_event(client, event))
+                                
+                            elif commit_collection == 'app.bsky.actor.profile':
+                                asyncio.create_task(process_profile_event(client, event))
+                        
+                        await asyncio.sleep(0)
                                 
                     except json.JSONDecodeError:
                         continue
                     except Exception as e:
-                        print(f"❌ Error processing identity event: {e}")
+                        print(f"❌ Error processing event: {e}")
                         await asyncio.sleep(0)
                         continue
                         
         except Exception as e:
-            print(f"❌ Identity listener connection failed to {uri}: {e}")
-            await asyncio.sleep(5)  # Wait before trying next endpoint
+            print(f"❌ Jetstream connection failed to {uri}: {e}")
+            await asyncio.sleep(5)
             continue
 
 async def process_follow_event(client, event):
@@ -405,8 +401,7 @@ async def process_profile_event(client, event):
                         # Filter changes based on user preferences
                         enabled_changes = []
                         for category in changed_categories:
-                            pref_key = f'disabled_{category}'
-                            if not user_prefs.get(pref_key, False):
+                            if category not in user_prefs:
                                 enabled_changes.append(category)
                         
                         if enabled_changes:
@@ -427,74 +422,21 @@ async def process_profile_event(client, event):
                 print(f"❌ Error processing profile change for {user_did}: {e}")
     # Silently skip when no changes detected (no need to log spam)
 
-async def listen_profile_events(client):
-    """Connect to Jetstream and listen for profile updates and follows using Phil's fake filter approach."""
-    # Phil's recommended approach - fake filter to get commit events
-    endpoints = [
-        "wss://jetstream1.us-east.fire.hose.cam/subscribe?wantedCollections=nothing.please.thanks&compress=false",
-        "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
-        "wss://jetstream1.us-west.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false",
-        "wss://jetstream1.us-east.bsky.network/subscribe?wantedCollections=nothing.please.thanks&compress=false"
-    ]
-    
-    for uri in endpoints:
-        try:
-            print(f"📝 Connecting to Profile Jetstream: {uri}")
-            # Add longer timeout and connection parameters
-            async with websockets.connect(
-                uri, 
-                open_timeout=30,
-                close_timeout=10,
-                ping_interval=20,
-                ping_timeout=10
-            ) as websocket:
-                print("📝 Connected! Listening for profile updates and follows...")
-                async for message in websocket:
-                    try:
-                        event = json.loads(message)
-                        
-                        # ONLY process commit events in this listener
-                        if event.get('kind') == 'commit':
-                            commit_collection = event.get('commit', {}).get('collection')
-                            
-                            # Check if this is a follow event (someone following the bot)
-                            if commit_collection == 'app.bsky.graph.follow':
-                                # Process follow events asynchronously
-                                asyncio.create_task(process_follow_event(client, event))
-                                
-                            # Check if this is a profile update event
-                            elif commit_collection == 'app.bsky.actor.profile':
-                                # Process profile events asynchronously
-                                asyncio.create_task(process_profile_event(client, event))
-                                
-                            # Yield control to allow other listeners to work
-                            await asyncio.sleep(0)
-                                
-                    except json.JSONDecodeError:
-                        continue
-                    except Exception as e:
-                        print(f"❌ Error processing profile event: {e}")
-                        await asyncio.sleep(0)
-                        continue
-                        
-        except Exception as e:
-            print(f"❌ Profile listener connection failed to {uri}: {e}")
-            await asyncio.sleep(5)  # Wait before trying next endpoint
-            continue
-
 async def check_followers_and_dms(client):
     """Periodically check for new DMs and respond to commands."""
     while True:
         try:
             # Check for new DMs
             dm_client = client.with_bsky_chat_proxy()
-            convos = dm_client.list_convos(models.ChatBskyConvoListConvos.Params()).convos
+            convos_list = dm_client.chat.bsky.convo.list_convos()
+            convos = convos_list.convos
             
             for convo in convos:
                 try:
-                    messages = dm_client.get_messages(
+                    messages_list = dm_client.chat.bsky.convo.get_messages(
                         models.ChatBskyConvoGetMessages.Params(convo_id=convo.id)
-                    ).messages
+                    )
+                    messages = messages_list.messages
                     
                     # Get the latest message
                     if messages:
@@ -573,8 +515,7 @@ async def main():
     
     # Run all listeners concurrently
     await asyncio.gather(
-        listen_identity_events(client),
-        listen_profile_events(client), 
+        listen_all_events(client),
         check_followers_and_dms(client)
     )
 
