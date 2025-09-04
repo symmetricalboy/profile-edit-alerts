@@ -220,8 +220,6 @@ async def process_identity_event(client, event):
     if not changed_did or not new_handle:
         return
         
-    print(f"🏷️  Handle change detected: @{new_handle}")
-    
     # FIRST: Check if this user has mutual followers (only care about relevant users!)
     try:
         user_followers = client.get_followers(actor=changed_did)
@@ -282,8 +280,7 @@ async def process_identity_event(client, event):
                         print(f"📬 Sent handle change notification to {follower_did}")
                 except Exception as e:
                     print(f"❌ Error sending handle change notification to {follower_did}: {e}")
-        else:
-            print(f"🏷️  Handle change (irrelevant user): @{new_handle} - skipped")
+        # Silently skip irrelevant users (no need to log spam)
     except Exception as e:
         # Handle "Actor not found" errors gracefully (deleted/suspended accounts)
         error_str = str(e)
@@ -383,14 +380,10 @@ async def process_profile_event(client, event):
     if not user_did or operation != 'update':
         return
         
-    print(f"📝 PROFILE UPDATE detected for: {user_did}")
-    
     # Process the profile change
     changed_categories = await detect_profile_changes(user_did, new_record, client)
     
     if changed_categories:
-        print(f"📝 Profile changes detected: {', '.join(changed_categories)}")
-        
         # Check if this user has mutual followers
         try:
             user_followers = client.get_followers(actor=user_did)
@@ -402,6 +395,7 @@ async def process_profile_event(client, event):
             mutual_followers = user_follower_dids.intersection(bot_follower_dids)
             
             if mutual_followers:
+                print(f"📝 Profile changes detected: {', '.join(changed_categories)} for relevant user")
                 user_profile = client.get_profile(actor=user_did)
                 
                 for follower_did in mutual_followers:
@@ -422,8 +416,7 @@ async def process_profile_event(client, event):
                             
                     except Exception as e:
                         print(f"❌ Error sending profile notification to {follower_did}: {e}")
-            else:
-                print(f"📝 Profile update (irrelevant user): {user_did} - skipped")
+            # Silently skip irrelevant users (no need to log spam)
                 
         except Exception as e:
             # Handle "Actor not found" errors gracefully (deleted/suspended accounts)
@@ -432,8 +425,7 @@ async def process_profile_event(client, event):
                 print(f"ℹ️  Profile change for deleted/suspended account: {user_did} - skipped")
             else:
                 print(f"❌ Error processing profile change for {user_did}: {e}")
-    else:
-        print(f"📝 Profile update (no changes detected): {user_did}")
+    # Silently skip when no changes detected (no need to log spam)
 
 async def listen_profile_events(client):
     """Connect to Jetstream and listen for profile updates and follows using Phil's fake filter approach."""
