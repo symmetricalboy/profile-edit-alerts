@@ -486,7 +486,7 @@ async def check_followers_and_dms(client):
         try:
             # Check for new DMs
             dm_client = client.with_bsky_chat_proxy()
-            convos = dm_client.list_conversations(models.ChatBskyConvoListConvos.Params()).convos
+            convos = dm_client.list_convos(models.ChatBskyConvoListConvos.Params()).convos
             
             for convo in convos:
                 try:
