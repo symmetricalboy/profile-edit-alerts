@@ -169,18 +169,23 @@ def format_change_message(user_profile, changed_categories):
         'handle': 'changed their handle'
     }
     
-    display_name = user_profile.display_name or user_profile.handle
+    # Use handle and include display name for context
+    handle = user_profile.handle
+    display_name = user_profile.display_name
+    user_identifier = f"@{handle}"
+    if display_name:
+        user_identifier += f" ({display_name})"
     
     if len(changed_categories) == 1:
         action = category_messages[changed_categories[0]]
-        return f"📝 Profile Update\n\n@{display_name} {action}"
+        return f"📝 Profile Update\n\n{user_identifier} {action}"
     else:
         actions = [category_messages[cat] for cat in changed_categories]
         if len(actions) == 2:
             action_text = f"{actions[0]} and {actions[1]}"
         else:
             action_text = f"{', '.join(actions[:-1])}, and {actions[-1]}"
-        return f"📝 Profile Update\n\n@{display_name} {action_text}"
+        return f"📝 Profile Update\n\n{user_identifier} {action_text}"
 
 def send_dm(client, recipient_did, message_text):
     """Send a direct message to a user."""
@@ -251,22 +256,19 @@ async def process_identity_event(client, event):
                     return
             
             # Send DMs to mutual followers about the handle change
-            # Get user preferences for each mutual follower
+            old_handle = existing_profile.get('handle') if existing_profile else 'Someone'
+            old_display_name = existing_profile.get('display_name') if existing_profile else ''
+            
+            user_identifier = f"@{old_handle}"
+            if old_display_name:
+                user_identifier += f" ({old_display_name})"
+
+            message = f"🏷️ Handle Update\n\n{user_identifier} you follow changed their handle to @{new_handle}"
+            
             for follower_did in mutual_followers:
                 try:
                     user_prefs = await database.get_user_preferences(follower_did)
                     if 'handle' not in user_prefs:
-                        user_profile = None
-                        try:
-                            user_profile = client.get_profile(actor=changed_did)
-                        except:
-                            pass
-                        
-                        if user_profile:
-                            message = f"🏷️ Handle Update\n\n@{user_profile.display_name or 'Someone'} you follow changed their handle to @{new_handle}"
-                        else:
-                            message = f"🏷️ Handle Update\n\nSomeone you follow changed their handle to @{new_handle}"
-                        
                         send_dm(client, follower_did, message)
                         print(f"📬 Sent handle change notification to {follower_did}")
                 except Exception as e:
