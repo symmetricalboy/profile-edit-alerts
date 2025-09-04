@@ -569,7 +569,7 @@ async def main():
     # Initialize AT Protocol client
     client = Client()
     client.login(os.getenv('BLUESKY_HANDLE'), os.getenv('BLUESKY_PASSWORD'))
-    print(f"Logged in as {client.me.handle}")
+    print(f"✅ Logged in as {client.me.handle}")
     
     # Run all listeners concurrently
     await asyncio.gather(
