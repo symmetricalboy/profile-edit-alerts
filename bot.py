@@ -285,7 +285,12 @@ async def process_identity_event(client, event):
         else:
             print(f"🏷️  Handle change (irrelevant user): @{new_handle} - skipped")
     except Exception as e:
-        print(f"❌ Error processing handle change for {changed_did}: {e}")
+        # Handle "Actor not found" errors gracefully (deleted/suspended accounts)
+        error_str = str(e)
+        if "Actor not found" in error_str or "InvalidRequest" in error_str:
+            print(f"ℹ️  Handle change for deleted/suspended account: @{new_handle} (DID: {changed_did}) - skipped")
+        else:
+            print(f"❌ Error processing handle change for {changed_did}: {e}")
 
 async def listen_identity_events(client):
     """Connect to Jetstream and listen ONLY for handle changes using Phil's fake filter approach."""
@@ -421,7 +426,12 @@ async def process_profile_event(client, event):
                 print(f"📝 Profile update (irrelevant user): {user_did} - skipped")
                 
         except Exception as e:
-            print(f"❌ Error processing profile change for {user_did}: {e}")
+            # Handle "Actor not found" errors gracefully (deleted/suspended accounts)
+            error_str = str(e)
+            if "Actor not found" in error_str or "InvalidRequest" in error_str:
+                print(f"ℹ️  Profile change for deleted/suspended account: {user_did} - skipped")
+            else:
+                print(f"❌ Error processing profile change for {user_did}: {e}")
     else:
         print(f"📝 Profile update (no changes detected): {user_did}")
 
